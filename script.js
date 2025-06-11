@@ -1727,6 +1727,1221 @@ window.addEventListener('load', function() {
     setTimeout(setupAdvancedEventListeners, 1000);
 });
 
+
+// ================================================
+// SISTEMA DE BÚSQUEDA INTELIGENTE - VERSIÓN COMPLETA
+// Agregar al final de script.js (antes del cierre del archivo)
+// ================================================
+
+/* ================================================
+ * CONFIGURACIÓN DEL SISTEMA DE BÚSQUEDA
+ * ================================================ */
+
+const SEARCH_CONFIG = {
+    minQueryLength: 2,
+    maxResults: 10,
+    contextLength: 150,
+    highlightStyle: 'background: #fef3c7; color: #92400e; font-weight: bold;',
+    enableFuzzySearch: true,
+    searchHistory: true,
+    maxHistoryItems: 20
+};
+
+/* ================================================
+ * CLASE PRINCIPAL DE BÚSQUEDA INTELIGENTE
+ * ================================================ */
+
+class IntelligentSearch {
+    constructor() {
+        this.searchHistory = this.loadSearchHistory();
+        this.searchIndex = {};
+        this.isInitialized = false;
+        this.lastSearchTime = 0;
+        this.debounceTime = 300; // ms
+        
+        this.initializeSearchInterface();
+        this.buildSearchIndex();
+    }
+    
+    // Construir índice de búsqueda
+    buildSearchIndex() {
+        console.log('🔍 Construyendo índice de búsqueda...');
+        
+        Object.keys(INSTITUTIONAL_KNOWLEDGE).forEach(docKey => {
+            const doc = INSTITUTIONAL_KNOWLEDGE[docKey];
+            if (!doc || !doc.content) return;
+            
+            // Dividir en palabras y crear índice
+            const words = this.extractWords(doc.content);
+            const sentences = this.extractSentences(doc.content);
+            
+            this.searchIndex[docKey] = {
+                title: doc.title,
+                words: words,
+                sentences: sentences,
+                content: doc.content,
+                source: doc.source || 'UNKNOWN',
+                wordCount: words.length,
+                lastIndexed: new Date().toISOString()
+            };
+        });
+        
+        this.isInitialized = true;
+        console.log('✅ Índice de búsqueda construido:', Object.keys(this.searchIndex).length, 'documentos');
+    }
+    
+    // Extraer palabras del texto
+    extractWords(text) {
+        return text.toLowerCase()
+            .replace(/[^\w\s\u00C0-\u024F\u1E00-\u1EFF]/g, ' ') // Mantener caracteres con acentos
+            .split(/\s+/)
+            .filter(word => word.length >= 2)
+            .filter(word => !this.isStopWord(word));
+    }
+    
+    // Extraer oraciones del texto
+    extractSentences(text) {
+        return text.split(/[.!?]+/)
+            .map(s => s.trim())
+            .filter(s => s.length > 10);
+    }
+    
+    // Palabras vacías en español
+    isStopWord(word) {
+        const stopWords = [
+            'el', 'la', 'de', 'que', 'y', 'a', 'en', 'un', 'es', 'se', 'no', 'te', 'lo', 'le', 'da', 'su', 'por', 
+            'son', 'con', 'para', 'como', 'las', 'del', 'los', 'una', 'sus', 'al', 'ser', 'han', 'hay', 'era',
+            'pero', 'más', 'muy', 'todo', 'esta', 'este', 'esa', 'ese', 'otros', 'otra', 'mismo', 'también',
+            'hasta', 'donde', 'cuando', 'quien', 'cual', 'sobre', 'entre', 'sin', 'bien', 'cada', 'tanto'
+        ];
+        return stopWords.includes(word);
+    }
+    
+    // Realizar búsqueda inteligente
+    search(query, options = {}) {
+        if (!query || query.length < SEARCH_CONFIG.minQueryLength) {
+            return { results: [], query: query, totalFound: 0 };
+        }
+        
+        const searchOptions = {
+            documentFilter: options.selectedResources || [],
+            fuzzy: options.fuzzy !== false,
+            maxResults: options.maxResults || SEARCH_CONFIG.maxResults,
+            sortBy: options.sortBy || 'relevance' // relevance, title, source
+        };
+        
+        console.log('🔍 Buscando:', query, 'Opciones:', searchOptions);
+        
+        const searchTerms = this.extractWords(query);
+        const results = [];
+        
+        // Determinar documentos a buscar
+        const docsToSearch = searchOptions.documentFilter.length > 0 
+            ? searchOptions.documentFilter 
+            : Object.keys(this.searchIndex);
+        
+        // Buscar en cada documento
+        docsToSearch.forEach(docKey => {
+            const docIndex = this.searchIndex[docKey];
+            if (!docIndex) return;
+            
+            const matches = this.findMatches(searchTerms, docIndex, searchOptions.fuzzy);
+            
+            if (matches.score > 0) {
+                results.push({
+                    document: docKey,
+                    title: docIndex.title,
+                    score: matches.score,
+                    matches: matches.matches,
+                    context: this.extractBestContext(query, docIndex.content),
+                    source: docIndex.source,
+                    matchedTerms: matches.matchedTerms,
+                    totalWords: docIndex.wordCount,
+                    relevancePercent: Math.round((matches.score / searchTerms.length) * 100)
+                });
+            }
+        });
+        
+        // Ordenar resultados
+        this.sortResults(results, searchOptions.sortBy);
+        
+        // Limitar resultados
+        const limitedResults = results.slice(0, searchOptions.maxResults);
+        
+        // Guardar en historial
+        if (limitedResults.length > 0) {
+            this.addToHistory(query, limitedResults.length);
+        }
+        
+        const searchResult = {
+            query: query,
+            results: limitedResults,
+            totalFound: results.length,
+            searchTime: Date.now() - this.lastSearchTime,
+            terms: searchTerms
+        };
+        
+        console.log('📊 Resultados de búsqueda:', searchResult);
+        return searchResult;
+    }
+    
+    // Encontrar coincidencias en un documento
+    findMatches(searchTerms, docIndex, useFuzzy = true) {
+        let score = 0;
+        let matches = [];
+        let matchedTerms = [];
+        
+        searchTerms.forEach(term => {
+            // Búsqueda exacta
+            let exactMatches = docIndex.words.filter(word => word.includes(term)).length;
+            
+            // Búsqueda difusa si está habilitada
+            let fuzzyMatches = 0;
+            if (useFuzzy && exactMatches === 0) {
+                fuzzyMatches = docIndex.words.filter(word => 
+                    this.calculateSimilarity(term, word) > 0.7
+                ).length;
+            }
+            
+            const totalMatches = exactMatches + (fuzzyMatches * 0.5);
+            
+            if (totalMatches > 0) {
+                score += totalMatches;
+                matchedTerms.push(term);
+                matches.push({
+                    term: term,
+                    exact: exactMatches,
+                    fuzzy: fuzzyMatches,
+                    total: totalMatches
+                });
+                
+                // Bonus por aparición en título
+                if (docIndex.title.toLowerCase().includes(term)) {
+                    score += 3;
+                }
+            }
+        });
+        
+        return { score, matches, matchedTerms };
+    }
+    
+    // Extraer el mejor contexto para un término
+    extractBestContext(query, content) {
+        const queryWords = this.extractWords(query);
+        const sentences = this.extractSentences(content);
+        
+        let bestSentence = '';
+        let maxScore = 0;
+        
+        sentences.forEach(sentence => {
+            const sentenceWords = this.extractWords(sentence);
+            let score = 0;
+            
+            queryWords.forEach(term => {
+                if (sentenceWords.some(word => word.includes(term))) {
+                    score += 1;
+                    // Bonus por coincidencia exacta
+                    if (sentenceWords.includes(term)) {
+                        score += 1;
+                    }
+                }
+            });
+            
+            if (score > maxScore) {
+                maxScore = score;
+                bestSentence = sentence;
+            }
+        });
+        
+        // Limitar longitud y resaltar términos
+        if (bestSentence.length > SEARCH_CONFIG.contextLength) {
+            bestSentence = bestSentence.substring(0, SEARCH_CONFIG.contextLength) + '...';
+        }
+        
+        return this.highlightTerms(bestSentence, queryWords);
+    }
+    
+    // Resaltar términos de búsqueda
+    highlightTerms(text, terms) {
+        let highlightedText = text;
+        
+        terms.forEach(term => {
+            const regex = new RegExp(`(${term})`, 'gi');
+            highlightedText = highlightedText.replace(regex, `<mark style="${SEARCH_CONFIG.highlightStyle}">$1</mark>`);
+        });
+        
+        return highlightedText;
+    }
+    
+    // Calcular similitud entre dos palabras (algoritmo de Levenshtein simplificado)
+    calculateSimilarity(str1, str2) {
+        const len1 = str1.length;
+        const len2 = str2.length;
+        
+        if (len1 === 0 || len2 === 0) return 0;
+        
+        const maxLen = Math.max(len1, len2);
+        let distance = 0;
+        
+        // Simplificado: contar caracteres diferentes
+        for (let i = 0; i < Math.min(len1, len2); i++) {
+            if (str1[i] !== str2[i]) distance++;
+        }
+        
+        distance += Math.abs(len1 - len2);
+        
+        return 1 - (distance / maxLen);
+    }
+    
+    // Ordenar resultados
+    sortResults(results, sortBy) {
+        switch (sortBy) {
+            case 'title':
+                results.sort((a, b) => a.title.localeCompare(b.title));
+                break;
+            case 'source':
+                results.sort((a, b) => {
+                    if (a.source === 'PDF_REAL' && b.source !== 'PDF_REAL') return -1;
+                    if (a.source !== 'PDF_REAL' && b.source === 'PDF_REAL') return 1;
+                    return b.score - a.score;
+                });
+                break;
+            default: // relevance
+                results.sort((a, b) => b.score - a.score);
+        }
+    }
+    
+    // Inicializar interfaz de búsqueda
+    initializeSearchInterface() {
+        const searchHTML = `
+            <div class="intelligent-search-container" style="margin-bottom: 25px; display: none;" id="searchContainer">
+                <div class="search-header">
+                    <h3 style="color: #1e40af; margin-bottom: 15px; display: flex; align-items: center; gap: 10px;">
+                        🔍 Búsqueda Inteligente en Documentos
+                        <button onclick="toggleSearchContainer()" 
+                                style="background: #3b82f6; color: white; border: none; padding: 5px 10px; border-radius: 6px; font-size: 12px; cursor: pointer;">
+                            Ocultar
+                        </button>
+                    </h3>
+                    <p style="color: #64748b; margin-bottom: 15px; font-size: 0.9rem;">
+                        Busca información específica en todos los documentos institucionales
+                    </p>
+                </div>
+                
+                <div class="search-input-container">
+                    <div style="display: flex; gap: 10px; margin-bottom: 15px;">
+                        <input type="text" 
+                               id="intelligentSearchInput" 
+                               placeholder="Buscar en documentos (ej: normas disciplinarias, valores institucionales...)" 
+                               style="flex: 1; padding: 12px; border: 2px solid #e2e8f0; border-radius: 8px; font-size: 16px;">
+                        <select id="searchSortBy" 
+                                style="padding: 12px; border: 2px solid #e2e8f0; border-radius: 8px;">
+                            <option value="relevance">Por Relevancia</option>
+                            <option value="title">Por Título</option>
+                            <option value="source">Por Fuente</option>
+                        </select>
+                        <button onclick="clearSearch()" 
+                                style="padding: 12px 16px; background: #6b7280; color: white; border: none; border-radius: 8px; cursor: pointer;">
+                            🗑️ Limpiar
+                        </button>
+                    </div>
+                    
+                    <div style="display: flex; gap: 15px; align-items: center; margin-bottom: 15px; font-size: 0.9rem;">
+                        <label style="display: flex; align-items: center; gap: 5px;">
+                            <input type="checkbox" id="fuzzySearchEnabled" checked>
+                            <span>Búsqueda aproximada</span>
+                        </label>
+                        <label style="display: flex; align-items: center; gap: 5px;">
+                            <input type="checkbox" id="searchInSelectedOnly">
+                            <span>Solo en recursos seleccionados</span>
+                        </label>
+                        <span id="searchStats" style="color: #64748b;"></span>
+                    </div>
+                </div>
+                
+                <div id="searchResults" class="search-results"></div>
+                
+                <div id="searchHistory" class="search-history" style="margin-top: 20px; display: none;">
+                    <h4 style="color: #1e40af; margin-bottom: 10px;">📊 Historial de Búsquedas</h4>
+                    <div id="historyList"></div>
+                </div>
+            </div>
+        `;
+        
+        // Insertar antes de la sección de chat
+        const chatSection = document.querySelector('.chat-section');
+        if (chatSection) {
+            chatSection.insertAdjacentHTML('beforebegin', searchHTML);
+        }
+        
+        this.setupSearchEventListeners();
+        this.addSearchStyles();
+    }
+    
+    // Configurar event listeners
+    setupSearchEventListeners() {
+        const searchInput = document.getElementById('intelligentSearchInput');
+        if (searchInput) {
+            // Búsqueda en tiempo real con debounce
+            searchInput.addEventListener('input', (e) => {
+                this.lastSearchTime = Date.now();
+                clearTimeout(this.searchTimeout);
+                
+                this.searchTimeout = setTimeout(() => {
+                    if (Date.now() - this.lastSearchTime >= this.debounceTime - 50) {
+                        this.performSearch();
+                    }
+                }, this.debounceTime);
+            });
+            
+            // Enter para buscar inmediatamente
+            searchInput.addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') {
+                    clearTimeout(this.searchTimeout);
+                    this.performSearch();
+                }
+            });
+        }
+        
+        // Cambio en criterio de ordenamiento
+        const sortSelect = document.getElementById('searchSortBy');
+        if (sortSelect) {
+            sortSelect.addEventListener('change', () => {
+                if (searchInput && searchInput.value.trim()) {
+                    this.performSearch();
+                }
+            });
+        }
+        
+        // Cambio en opciones de búsqueda
+        const fuzzyCheckbox = document.getElementById('fuzzySearchEnabled');
+        const selectedOnlyCheckbox = document.getElementById('searchInSelectedOnly');
+        
+        [fuzzyCheckbox, selectedOnlyCheckbox].forEach(checkbox => {
+            if (checkbox) {
+                checkbox.addEventListener('change', () => {
+                    if (searchInput && searchInput.value.trim()) {
+                        this.performSearch();
+                    }
+                });
+            }
+        });
+    }
+    
+    // Realizar búsqueda desde la interfaz
+    performSearch() {
+        const query = document.getElementById('intelligentSearchInput')?.value?.trim();
+        const sortBy = document.getElementById('searchSortBy')?.value || 'relevance';
+        const fuzzy = document.getElementById('fuzzySearchEnabled')?.checked !== false;
+        const selectedOnly = document.getElementById('searchInSelectedOnly')?.checked === true;
+        
+        if (!query) {
+            this.clearSearchResults();
+            return;
+        }
+        
+        const options = {
+            selectedResources: selectedOnly ? selectedResources : [],
+            fuzzy: fuzzy,
+            sortBy: sortBy
+        };
+        
+        const startTime = Date.now();
+        const searchResult = this.search(query, options);
+        
+        this.displaySearchResults(searchResult);
+        this.updateSearchStats(searchResult, Date.now() - startTime);
+        
+        logActivity('INTELLIGENT_SEARCH', {
+            query: query,
+            resultsFound: searchResult.totalFound,
+            options: options
+        });
+    }
+    
+    // Mostrar resultados de búsqueda
+    displaySearchResults(searchResult) {
+        const resultsContainer = document.getElementById('searchResults');
+        if (!resultsContainer) return;
+        
+        if (searchResult.results.length === 0) {
+            resultsContainer.innerHTML = `
+                <div class="search-no-results">
+                    <div style="padding: 20px; text-align: center; background: #fef2f2; border: 2px solid #fca5a5; border-radius: 12px; color: #dc2626;">
+                        <div style="font-size: 2rem; margin-bottom: 10px;">🔍</div>
+                        <h4>No se encontraron resultados</h4>
+                        <p>No se encontró información para "<strong>${searchResult.query}</strong>"</p>
+                        <div style="margin-top: 15px; font-size: 0.9rem;">
+                            <strong>Sugerencias:</strong><br>
+                            • Verifica la ortografía<br>
+                            • Usa términos más generales<br>
+                            • Intenta sinónimos<br>
+                            • Activa la búsqueda aproximada
+                        </div>
+                    </div>
+                </div>
+            `;
+            return;
+        }
+        
+        const resultsHTML = searchResult.results.map((result, index) => `
+            <div class="search-result-item" data-document="${result.document}">
+                <div class="result-header">
+                    <div class="result-title">
+                        <span class="result-rank">#${index + 1}</span>
+                        <strong>${result.title}</strong>
+                        <span class="result-source ${result.source === 'PDF_REAL' ? 'source-pdf' : 'source-base'}">
+                            ${result.source === 'PDF_REAL' ? '📄 PDF' : '📝 Base'}
+                        </span>
+                    </div>
+                    <div class="result-score">
+                        Relevancia: ${result.relevancePercent}%
+                    </div>
+                </div>
+                
+                <div class="result-context">
+                    ${result.context}
+                </div>
+                
+                <div class="result-metadata">
+                    <span>📝 Términos: ${result.matchedTerms.join(', ')}</span>
+                    <span>📊 Puntuación: ${result.score.toFixed(1)}</span>
+                    <span>📄 Palabras: ${result.totalWords}</span>
+                    <button onclick="selectDocumentFromSearch('${result.document}')" 
+                            class="select-document-btn">
+                        📋 Seleccionar Documento
+                    </button>
+                </div>
+            </div>
+        `).join('');
+        
+        resultsContainer.innerHTML = `
+            <div class="search-results-header">
+                <h4 style="color: #16a34a; margin-bottom: 15px;">
+                    ✅ Encontrados ${searchResult.totalFound} resultado(s) para "${searchResult.query}"
+                </h4>
+            </div>
+            <div class="search-results-list">
+                ${resultsHTML}
+            </div>
+        `;
+    }
+    
+    // Actualizar estadísticas de búsqueda
+    updateSearchStats(searchResult, searchTime) {
+        const statsElement = document.getElementById('searchStats');
+        if (statsElement) {
+            statsElement.textContent = `${searchResult.totalFound} resultados en ${searchTime}ms`;
+        }
+    }
+    
+    // Limpiar resultados de búsqueda
+    clearSearchResults() {
+        const resultsContainer = document.getElementById('searchResults');
+        if (resultsContainer) {
+            resultsContainer.innerHTML = '';
+        }
+        
+        const statsElement = document.getElementById('searchStats');
+        if (statsElement) {
+            statsElement.textContent = '';
+        }
+    }
+    
+    // Gestión del historial de búsquedas
+    addToHistory(query, resultCount) {
+        const historyItem = {
+            query: query,
+            timestamp: new Date().toISOString(),
+            resultCount: resultCount
+        };
+        
+        // Evitar duplicados recientes
+        this.searchHistory = this.searchHistory.filter(item => 
+            item.query.toLowerCase() !== query.toLowerCase()
+        );
+        
+        this.searchHistory.unshift(historyItem);
+        
+        // Limitar tamaño del historial
+        if (this.searchHistory.length > SEARCH_CONFIG.maxHistoryItems) {
+            this.searchHistory = this.searchHistory.slice(0, SEARCH_CONFIG.maxHistoryItems);
+        }
+        
+        this.saveSearchHistory();
+        this.updateHistoryDisplay();
+    }
+    
+    // Cargar historial de búsquedas
+    loadSearchHistory() {
+        try {
+            const saved = localStorage.getItem('mariaAuxiliadoraSearchHistory');
+            return saved ? JSON.parse(saved) : [];
+        } catch (error) {
+            console.warn('Error cargando historial de búsqueda:', error);
+            return [];
+        }
+    }
+    
+    // Guardar historial de búsquedas
+    saveSearchHistory() {
+        try {
+            localStorage.setItem('mariaAuxiliadoraSearchHistory', JSON.stringify(this.searchHistory));
+        } catch (error) {
+            console.warn('Error guardando historial de búsqueda:', error);
+        }
+    }
+    
+    // Actualizar visualización del historial
+    updateHistoryDisplay() {
+        const historyList = document.getElementById('historyList');
+        if (!historyList || this.searchHistory.length === 0) return;
+        
+        const historyHTML = this.searchHistory.slice(0, 10).map(item => `
+            <div class="history-item">
+                <span class="history-query" onclick="searchFromHistory('${item.query}')">${item.query}</span>
+                <span class="history-meta">${item.resultCount} resultados - ${new Date(item.timestamp).toLocaleString()}</span>
+            </div>
+        `).join('');
+        
+        historyList.innerHTML = historyHTML;
+        
+        const historyContainer = document.getElementById('searchHistory');
+        if (historyContainer) {
+            historyContainer.style.display = this.searchHistory.length > 0 ? 'block' : 'none';
+        }
+    }
+    
+    // Agregar estilos CSS
+    addSearchStyles() {
+        const styles = `
+            <style>
+                .intelligent-search-container {
+                    background: linear-gradient(135deg, #f0f9ff, #e0f2fe);
+                    border: 2px solid #0ea5e9;
+                    border-radius: 15px;
+                    padding: 25px;
+                    box-shadow: 0 4px 20px rgba(14, 165, 233, 0.1);
+                }
+                
+                .search-results-list {
+                    max-height: 500px;
+                    overflow-y: auto;
+                }
+                
+                .search-result-item {
+                    background: white;
+                    border: 2px solid #e2e8f0;
+                    border-radius: 12px;
+                    padding: 20px;
+                    margin-bottom: 15px;
+                    transition: all 0.3s ease;
+                    cursor: pointer;
+                }
+                
+                .search-result-item:hover {
+                    border-color: #3b82f6;
+                    box-shadow: 0 4px 15px rgba(59, 130, 246, 0.1);
+                    transform: translateY(-2px);
+                }
+                
+                .result-header {
+                    display: flex;
+                    justify-content: space-between;
+                    align-items: center;
+                    margin-bottom: 10px;
+                }
+                
+                .result-title {
+                    display: flex;
+                    align-items: center;
+                    gap: 10px;
+                    font-size: 1.1rem;
+                    color: #1e40af;
+                }
+                
+                .result-rank {
+                    background: #3b82f6;
+                    color: white;
+                    padding: 4px 8px;
+                    border-radius: 50%;
+                    font-size: 0.8rem;
+                    font-weight: bold;
+                    min-width: 24px;
+                    text-align: center;
+                }
+                
+                .result-source {
+                    padding: 4px 8px;
+                    border-radius: 12px;
+                    font-size: 0.8rem;
+                    font-weight: 600;
+                }
+                
+                .source-pdf {
+                    background: #dcfce7;
+                    color: #16a34a;
+                }
+                
+                .source-base {
+                    background: #fef3c7;
+                    color: #f59e0b;
+                }
+                
+                .result-score {
+                    background: #f1f5f9;
+                    padding: 6px 12px;
+                    border-radius: 20px;
+                    font-size: 0.9rem;
+                    color: #334155;
+                    font-weight: 600;
+                }
+                
+                .result-context {
+                    margin: 15px 0;
+                    line-height: 1.6;
+                    color: #334155;
+                    border-left: 4px solid #e2e8f0;
+                    padding-left: 15px;
+                    font-style: italic;
+                }
+                
+                .result-metadata {
+                    display: flex;
+                    gap: 15px;
+                    align-items: center;
+                    font-size: 0.9rem;
+                    color: #64748b;
+                    border-top: 1px solid #e2e8f0;
+                    padding-top: 12px;
+                    flex-wrap: wrap;
+                }
+                
+                .select-document-btn {
+                    background: linear-gradient(45deg, #16a34a, #22c55e);
+                    color: white;
+                    border: none;
+                    padding: 6px 12px;
+                    border-radius: 6px;
+                    cursor: pointer;
+                    font-size: 0.8rem;
+                    font-weight: 600;
+                    transition: all 0.3s ease;
+                }
+                
+                .select-document-btn:hover {
+                    transform: scale(1.05);
+                    box-shadow: 0 2px 8px rgba(22, 163, 74, 0.3);
+                }
+                
+                .search-no-results {
+                    margin: 20px 0;
+                }
+                
+                .search-history {
+                    background: white;
+                    border: 2px solid #e2e8f0;
+                    border-radius: 12px;
+                    padding: 20px;
+                }
+                
+                .history-item {
+                    display: flex;
+                    justify-content: space-between;
+                    align-items: center;
+                    padding: 10px;
+                    border-bottom: 1px solid #f1f5f9;
+                    cursor: pointer;
+                    transition: background 0.3s ease;
+                }
+                
+                .history-item:hover {
+                    background: #f8fafc;
+                }
+                
+                .history-query {
+                    color: #3b82f6;
+                    font-weight: 600;
+                    flex: 1;
+                }
+                
+                .history-meta {
+                    color: #64748b;
+                    font-size: 0.8rem;
+                }
+                
+                @media (max-width: 768px) {
+                    .result-header {
+                        flex-direction: column;
+                        align-items: flex-start;
+                        gap: 10px;
+                    }
+                    
+                    .result-metadata {
+                        flex-direction: column;
+                        align-items: flex-start;
+                        gap: 8px;
+                    }
+                    
+                    .history-item {
+                        flex-direction: column;
+                        align-items: flex-start;
+                        gap: 5px;
+                    }
+                }
+            </style>
+        `;
+        
+        document.head.insertAdjacentHTML('beforeend', styles);
+    }
+    
+    // Métodos públicos
+    getSearchStats() {
+        return {
+            totalSearches: this.searchHistory.length,
+            documentsIndexed: Object.keys(this.searchIndex).length,
+            isInitialized: this.isInitialized,
+            lastSearch: this.searchHistory[0] || null
+        };
+    }
+    
+    rebuildIndex() {
+        console.log('🔄 Reconstruyendo índice de búsqueda...');
+        this.searchIndex = {};
+        this.buildSearchIndex();
+    }
+    
+    exportSearchHistory() {
+        const data = {
+            searchHistory: this.searchHistory,
+            exportDate: new Date().toISOString(),
+            totalSearches: this.searchHistory.length
+        };
+        
+        const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `historial-busqueda-${new Date().toISOString().split('T')[0]}.json`;
+        a.click();
+        URL.revokeObjectURL(url);
+    }
+}
+
+/* ================================================
+ * FUNCIONES GLOBALES DE BÚSQUEDA
+ * ================================================ */
+
+// Instancia global del buscador
+let intelligentSearchInstance = null;
+
+// Inicializar búsqueda inteligente
+function initializeIntelligentSearch() {
+    if (!intelligentSearchInstance) {
+        intelligentSearchInstance = new IntelligentSearch();
+        console.log('🔍 Sistema de búsqueda inteligente inicializado');
+    }
+    return intelligentSearchInstance;
+}
+
+// Mostrar/ocultar contenedor de búsqueda
+function toggleSearchContainer() {
+    const container = document.getElementById('searchContainer');
+    if (container) {
+        const isVisible = container.style.display !== 'none';
+        container.style.display = isVisible ? 'none' : 'block';
+        
+        // Actualizar texto del botón
+        const toggleBtn = container.querySelector('button');
+        if (toggleBtn) {
+            toggleBtn.textContent = isVisible ? 'Mostrar' : 'Ocultar';
+        }
+        
+        // Si se muestra, hacer foco en el input
+        if (!isVisible) {
+            setTimeout(() => {
+                const searchInput = document.getElementById('intelligentSearchInput');
+                if (searchInput) searchInput.focus();
+            }, 100);
+        }
+    }
+}
+
+// Limpiar búsqueda
+function clearSearch() {
+    const searchInput = document.getElementById('intelligentSearchInput');
+    if (searchInput) {
+        searchInput.value = '';
+        searchInput.focus();
+    }
+    
+    if (intelligentSearchInstance) {
+        intelligentSearchInstance.clearSearchResults();
+    }
+}
+
+// Buscar desde el historial
+function searchFromHistory(query) {
+    const searchInput = document.getElementById('intelligentSearchInput');
+    if (searchInput) {
+        searchInput.value = query;
+        if (intelligentSearchInstance) {
+            intelligentSearchInstance.performSearch();
+        }
+    }
+}
+
+// Seleccionar documento desde resultados de búsqueda
+function selectDocumentFromSearch(documentKey) {
+    // Limpiar selecciones previas
+    document.querySelectorAll('.resource-card').forEach(card => {
+        card.classList.remove('selected');
+    });
+    
+    // Limpiar array de recursos seleccionados
+    selectedResources.length = 0;
+    
+    // Seleccionar el documento específico
+    const targetCard = document.querySelector(`[data-resource="${documentKey}"]`);
+    if (targetCard) {
+        targetCard.classList.add('selected');
+        selectedResources.push(documentKey);
+        
+        // Scroll al documento seleccionado
+        targetCard.scrollIntoView({ 
+            behavior: 'smooth', 
+            block: 'center' 
+        });
+        
+        // Efecto visual temporal
+        targetCard.style.animation = 'pulse 1s ease-in-out';
+        setTimeout(() => {
+            targetCard.style.animation = '';
+        }, 1000);
+        
+        updateChatStatus();
+        
+        // Notificar éxito
+        if (window.notifySuccess) {
+            notifySuccess(`Documento "${INSTITUTIONAL_KNOWLEDGE[documentKey]?.title}" seleccionado`);
+        } else {
+            showMessage(`📋 Documento seleccionado: ${INSTITUTIONAL_KNOWLEDGE[documentKey]?.title}`, 'success');
+        }
+        
+        logActivity('DOCUMENT_SELECTED_FROM_SEARCH', { 
+            document: documentKey,
+            title: INSTITUTIONAL_KNOWLEDGE[documentKey]?.title 
+        });
+    }
+}
+
+// Mostrar búsqueda inteligente al usuario logueado
+function showIntelligentSearch() {
+    const container = document.getElementById('searchContainer');
+    if (container) {
+        container.style.display = 'block';
+        
+        // Inicializar si no existe
+        if (!intelligentSearchInstance) {
+            initializeIntelligentSearch();
+        }
+        
+        // Hacer foco en el input
+        setTimeout(() => {
+            const searchInput = document.getElementById('intelligentSearchInput');
+            if (searchInput) searchInput.focus();
+        }, 200);
+    }
+}
+
+// Función para realizar búsqueda programática
+function programmaticSearch(query, options = {}) {
+    if (!intelligentSearchInstance) {
+        initializeIntelligentSearch();
+    }
+    
+    return intelligentSearchInstance.search(query, options);
+}
+
+// Función para obtener sugerencias de búsqueda
+function getSearchSuggestions(query) {
+    if (!intelligentSearchInstance || !query) return [];
+    
+    const suggestions = [];
+    const queryLower = query.toLowerCase();
+    
+    // Buscar en títulos de documentos
+    Object.values(INSTITUTIONAL_KNOWLEDGE).forEach(doc => {
+        if (doc.title.toLowerCase().includes(queryLower)) {
+            suggestions.push({
+                type: 'document_title',
+                text: doc.title,
+                icon: '📄'
+            });
+        }
+    });
+    
+    // Buscar en historial
+    intelligentSearchInstance.searchHistory.forEach(item => {
+        if (item.query.toLowerCase().includes(queryLower) && 
+            !suggestions.some(s => s.text === item.query)) {
+            suggestions.push({
+                type: 'history',
+                text: item.query,
+                icon: '🕒',
+                meta: `${item.resultCount} resultados`
+            });
+        }
+    });
+    
+    // Sugerencias comunes
+    const commonSuggestions = [
+        'normas disciplinarias', 'valores institucionales', 'misión y visión',
+        'calendario académico', 'procedimientos matrícula', 'sistema preventivo',
+        'derechos estudiantes', 'deberes estudiantes', 'uniformes', 'evaluación'
+    ];
+    
+    commonSuggestions.forEach(suggestion => {
+        if (suggestion.includes(queryLower) && 
+            !suggestions.some(s => s.text === suggestion)) {
+            suggestions.push({
+                type: 'common',
+                text: suggestion,
+                icon: '💡'
+            });
+        }
+    });
+    
+    return suggestions.slice(0, 8);
+}
+
+// Función de búsqueda avanzada con filtros
+function advancedSearch(criteria) {
+    if (!intelligentSearchInstance) {
+        initializeIntelligentSearch();
+    }
+    
+    const {
+        query = '',
+        documents = [],
+        source = 'all', // 'pdf', 'base', 'all'
+        minScore = 0,
+        maxResults = 50,
+        sortBy = 'relevance'
+    } = criteria;
+    
+    const results = intelligentSearchInstance.search(query, {
+        selectedResources: documents,
+        maxResults: maxResults,
+        sortBy: sortBy
+    });
+    
+    // Filtrar por fuente si se especifica
+    if (source !== 'all') {
+        const targetSource = source === 'pdf' ? 'PDF_REAL' : 'FALLBACK';
+        results.results = results.results.filter(r => r.source === targetSource);
+    }
+    
+    // Filtrar por puntuación mínima
+    if (minScore > 0) {
+        results.results = results.results.filter(r => r.score >= minScore);
+    }
+    
+    results.totalFound = results.results.length;
+    return results;
+}
+
+// Funciones de estadísticas y análisis
+function getSearchAnalytics() {
+    if (!intelligentSearchInstance) return null;
+    
+    const history = intelligentSearchInstance.searchHistory;
+    const analytics = {
+        totalSearches: history.length,
+        uniqueQueries: new Set(history.map(h => h.query.toLowerCase())).size,
+        avgResultsPerSearch: history.length > 0 ? 
+            history.reduce((sum, h) => sum + h.resultCount, 0) / history.length : 0,
+        topQueries: {},
+        searchesByHour: {},
+        searchesByDay: {}
+    };
+    
+    // Analizar consultas más frecuentes
+    history.forEach(search => {
+        const query = search.query.toLowerCase();
+        analytics.topQueries[query] = (analytics.topQueries[query] || 0) + 1;
+        
+        const date = new Date(search.timestamp);
+        const hour = date.getHours();
+        const day = date.toDateString();
+        
+        analytics.searchesByHour[hour] = (analytics.searchesByHour[hour] || 0) + 1;
+        analytics.searchesByDay[day] = (analytics.searchesByDay[day] || 0) + 1;
+    });
+    
+    // Convertir a arrays ordenados
+    analytics.topQueries = Object.entries(analytics.topQueries)
+        .sort(([,a], [,b]) => b - a)
+        .slice(0, 10);
+    
+    return analytics;
+}
+
+// Función para exportar análisis completo
+function exportSearchAnalytics() {
+    const analytics = getSearchAnalytics();
+    if (!analytics) {
+        showMessage('❌ No hay datos de búsqueda para exportar', 'error');
+        return;
+    }
+    
+    const report = {
+        generatedAt: new Date().toISOString(),
+        summary: analytics,
+        detailedHistory: intelligentSearchInstance?.searchHistory || [],
+        systemInfo: {
+            documentsIndexed: Object.keys(INSTITUTIONAL_KNOWLEDGE).length,
+            searchSystemVersion: '1.0',
+            portal: 'María Auxiliadora - Cartago, Valle'
+        }
+    };
+    
+    const blob = new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `analisis-busqueda-${new Date().toISOString().split('T')[0]}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    
+    showMessage('📊 Análisis de búsqueda exportado exitosamente', 'success');
+}
+
+/* ================================================
+ * INTEGRACIÓN CON EL SISTEMA PRINCIPAL
+ * ================================================ */
+
+// Modificar la función showMainContent original para incluir búsqueda
+const originalShowMainContent = window.showMainContent;
+if (originalShowMainContent) {
+    window.showMainContent = function() {
+        // Ejecutar función original
+        originalShowMainContent();
+        
+        // Inicializar búsqueda después de un breve delay
+        setTimeout(() => {
+            initializeIntelligentSearch();
+            showIntelligentSearch();
+        }, 1500);
+    };
+}
+
+// Integrar con el sistema de recursos
+const originalToggleResourceSelection = window.toggleResourceSelection;
+if (originalToggleResourceSelection) {
+    window.toggleResourceSelection = function(card) {
+        // Ejecutar función original
+        originalToggleResourceSelection(card);
+        
+        // Actualizar checkbox de búsqueda si está habilitado
+        const searchInSelectedOnly = document.getElementById('searchInSelectedOnly');
+        if (searchInSelectedOnly && searchInSelectedOnly.checked) {
+            // Re-ejecutar búsqueda si hay términos
+            const searchInput = document.getElementById('intelligentSearchInput');
+            if (searchInput && searchInput.value.trim() && intelligentSearchInstance) {
+                setTimeout(() => {
+                    intelligentSearchInstance.performSearch();
+                }, 100);
+            }
+        }
+    };
+}
+
+// Funciones de debug y utilidad
+window.debugSearch = function() {
+    if (!intelligentSearchInstance) {
+        console.log('❌ Sistema de búsqueda no inicializado');
+        return;
+    }
+    
+    console.log('=== DEBUG BÚSQUEDA INTELIGENTE ===');
+    console.log('Estado:', intelligentSearchInstance.getSearchStats());
+    console.log('Historial:', intelligentSearchInstance.searchHistory);
+    console.log('Índice:', intelligentSearchInstance.searchIndex);
+    console.log('Analíticas:', getSearchAnalytics());
+    console.log('=================================');
+};
+
+window.testSearch = function(query = 'valores institucionales') {
+    console.log(`🧪 Probando búsqueda: "${query}"`);
+    
+    if (!intelligentSearchInstance) {
+        initializeIntelligentSearch();
+    }
+    
+    const results = programmaticSearch(query);
+    console.log('Resultados:', results);
+    
+    // Mostrar en interfaz si existe
+    const searchInput = document.getElementById('intelligentSearchInput');
+    if (searchInput) {
+        searchInput.value = query;
+        intelligentSearchInstance.performSearch();
+    }
+    
+    return results;
+};
+
+window.clearSearchHistory = function() {
+    if (confirm('¿Está seguro de eliminar todo el historial de búsquedas?')) {
+        if (intelligentSearchInstance) {
+            intelligentSearchInstance.searchHistory = [];
+            intelligentSearchInstance.saveSearchHistory();
+            intelligentSearchInstance.updateHistoryDisplay();
+            showMessage('🗑️ Historial de búsqueda eliminado', 'success');
+        }
+    }
+};
+
+window.rebuildSearchIndex = function() {
+    if (intelligentSearchInstance) {
+        intelligentSearchInstance.rebuildIndex();
+        showMessage('🔄 Índice de búsqueda reconstruido', 'success');
+    }
+};
+
+// Funciones de utilidad adicionales
+window.searchStats = () => intelligentSearchInstance?.getSearchStats();
+window.searchAnalytics = () => getSearchAnalytics();
+window.exportSearchData = () => exportSearchAnalytics();
+
+/* ================================================
+ * INICIALIZACIÓN AUTOMÁTICA
+ * ================================================ */
+
+// Inicializar cuando los documentos estén listos
+document.addEventListener('DOMContentLoaded', function() {
+    // Esperar a que INSTITUTIONAL_KNOWLEDGE esté disponible
+    const checkAndInit = () => {
+        if (window.INSTITUTIONAL_KNOWLEDGE && Object.keys(INSTITUTIONAL_KNOWLEDGE).length > 0) {
+            console.log('🔍 Documentos disponibles, preparando búsqueda inteligente...');
+            // No inicializar automáticamente, esperar al login
+        } else {
+            setTimeout(checkAndInit, 1000);
+        }
+    };
+    
+    checkAndInit();
+});
+
+console.log('🔍✅ Sistema de Búsqueda Inteligente - Cargado y listo');
+console.log('💡 Funciones disponibles:');
+console.log('   - debugSearch(): Ver estado del sistema');
+console.log('   - testSearch(query): Probar búsqueda');
+console.log('   - clearSearchHistory(): Limpiar historial');
+console.log('   - exportSearchData(): Exportar análisis');
+console.log('   - rebuildSearchIndex(): Reconstruir índice');
+
 /* ================================================
  * FIN DEL ARCHIVO SCRIPT.JS
  * PORTAL EDUCATIVO MARÍA AUXILIADORA
